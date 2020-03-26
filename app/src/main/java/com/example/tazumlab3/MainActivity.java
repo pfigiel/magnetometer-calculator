@@ -16,17 +16,14 @@ import android.widget.TextView;
 import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity implements SensorEventListener {
-    // Magnetometer axis used to input data. Empirically determined Y to be the best on test device.
-    private int activeAxis = AxisDict.Y;
-
     // Value on the activeAxis needed to deem the device calibrated
-    private float calibrationPoint = 20;
+    private float calibrationPoint = 0;
 
     // Margin for the calibration point (+/- given value)
-    private float calibrationPointMargin = 5;
+    private double calibrationPointMargin = 0.05;
 
-    // Value of magnetometer reading crossing which is treated as bit input
-    private float magnetometerInputThreshold = 5;
+    // Values of magnetometer reading crossing which is treated as input from user
+    private double[] magnetometerInputThreshold = new double[] {-0.8, 0.8};
 
     // A flip-flop remembering if the device was last pointed towards the calibration point or not
     private boolean lastDeviceRotationFlipFlop = true;
@@ -37,22 +34,28 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     // Integer value of the token currently being entered (coded)
     private int currentlyCodedTokenValue = 0;
 
-    // Number of bits already entered to code the current token
-    private int codingBitCounter = 0;
-
     // Time of last device rotation
     private long lastRotationTime = System.currentTimeMillis();
 
+    // Time of last processed reading
+    private long lastProcessedReadingTime = System.currentTimeMillis();
+
     // Time needed to interpret no rotation as 0 bit
     private long zeroBitTimeInterval = 2000;
+
+    // Time between readings
+    private long readingInterval = 200;
 
     private boolean isDeviceCalibrated = false;
     private boolean isCalculatorActive = true;
 
     private Sensor magnetometer;
+    private Sensor accelerometer;
     private SensorManager mSensorManager;
 
-    private float[] mGeomagnetic = null;
+    private float[] mGeomagnetic = new float[3];
+    private float[] mGravity = null;
+    private float azimuth = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +70,7 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
 
         mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         magnetometer = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+        accelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
 
         if (null == magnetometer) {
             finish();
@@ -76,39 +80,46 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     @Override
     protected void onResume() {
         super.onResume();
-
-        // Register for sensor updates
-
         mSensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_NORMAL);
+        mSensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_NORMAL);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-
-        // Unregister all sensors
         mSensorManager.unregisterListener(this);
-
     }
 
     @Override
     public void onSensorChanged(SensorEvent event) {
         if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
-            mGeomagnetic = new float[3];
             System.arraycopy(event.values, 0, mGeomagnetic, 0, 3);
         }
+        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+            mGravity = event.values;
+        }
+        long currentTime = System.currentTimeMillis();
+        if (mGravity != null && mGeomagnetic != null && currentTime - readingInterval > lastProcessedReadingTime) {
+            lastProcessedReadingTime = currentTime;
+            float R[] = new float[9];
+            float I[] = new float[9];
+            boolean success = SensorManager.getRotationMatrix(R, I, mGravity, mGeomagnetic);
+            if (success) {
+                float orientation[] = new float[3];
+                SensorManager.getOrientation(R, orientation);
+                azimuth = orientation[0];
+            }
 
-        if (mGeomagnetic != null) {
             if (!isDeviceCalibrated) {
                 try {
-                    handleDeviceCalibrationProcess(mGeomagnetic[activeAxis]);
+                    handleDeviceCalibrationProcess();
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
             }
             else {
                 try {
-                    processMagnetometerReading(mGeomagnetic[activeAxis]);
+                    processMagnetometerReading();
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -119,20 +130,20 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) { }
 
-    private void handleDeviceCalibrationProcess(float reading) throws InterruptedException {
+    private void handleDeviceCalibrationProcess() throws InterruptedException {
         TextView coordinatesTextView = findViewById(R.id.coordinatesTextView);
-        coordinatesTextView.setText(String.valueOf(mGeomagnetic[activeAxis]));
+        coordinatesTextView.setText(String.valueOf(azimuth));
 
-        if (reading >= calibrationPoint - calibrationPointMargin &&
-            reading <= calibrationPoint + calibrationPointMargin) {
+        if (azimuth >= calibrationPoint - calibrationPointMargin &&
+            azimuth <= calibrationPoint + calibrationPointMargin) {
             isDeviceCalibrated = true;
             initializeCalculator();
         }
     }
 
-    private void processMagnetometerReading(float reading) throws InterruptedException {
+    private void processMagnetometerReading() throws InterruptedException {
         long currentTime = System.currentTimeMillis();
-        boolean deviceRotationFlipFlop = reading > magnetometerInputThreshold;
+        boolean deviceRotationFlipFlop = azimuth > magnetometerInputThreshold[0] && azimuth < magnetometerInputThreshold[1];
         TextView displayTextView = findViewById(R.id.mainTextView);
 
         // Device has been rotated
@@ -141,23 +152,23 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             if (!isCalculatorActive) {
                 isCalculatorActive = true;
                 initializeCalculator();
-            // Calculator is active - user wants to enter '1' bit
+            // Calculator is active - user is entering token
             } else {
                 currentlyCodedTokenValue += 1;
                 lastRotationTime = currentTime;
                 TextView coordinatesTextView = findViewById(R.id.coordinatesTextView);
+                vibrate(100);
                 coordinatesTextView.setText(decodeCurrentToken());
             }
             lastDeviceRotationFlipFlop = deviceRotationFlipFlop;
-        // Calculator is active and device has not been rotated - user wants to enter '0' bit
+        // Calculator is active and device has not been rotated - user wants to go to next token
         } else if (currentTime - zeroBitTimeInterval > lastRotationTime && isCalculatorActive) {
             expression += decodeCurrentToken();
-            System.out.println(expression);
             currentlyCodedTokenValue = 0;
             lastRotationTime = currentTime;
-            vibrate(100);
+            vibrate(300);
             if(expression.length() == 2){
-                currentlyCodedTokenValue = 10;
+                currentlyCodedTokenValue = 0;
             }
 
             // 3 tokens have been entered - solve the expression
@@ -179,6 +190,7 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         mainTextView.setText("");
         mainTextView.setTextSize(400);
         coordinatesTextView.setText("");
+        lastDeviceRotationFlipFlop = azimuth > magnetometerInputThreshold[0] && azimuth < magnetometerInputThreshold[1];
         lastRotationTime = System.currentTimeMillis();
     }
 
@@ -196,11 +208,11 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             return String.valueOf(currentlyCodedTokenValue);
         } else if (currentlyCodedTokenValue < 13) {
             switch(currentlyCodedTokenValue) {
-                case 11:
+                case 10:
                     return "+";
-                case 12:
+                case 11:
                     return "-";
-                case 13:
+                case 12:
                     return "*";
             }
         }
