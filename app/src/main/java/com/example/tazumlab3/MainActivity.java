@@ -143,27 +143,22 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
                 initializeCalculator();
             // Calculator is active - user wants to enter '1' bit
             } else {
-                currentlyCodedTokenValue *= 2;
                 currentlyCodedTokenValue += 1;
-                codingBitCounter += 1;
                 lastRotationTime = currentTime;
-                vibrate(100);
+                TextView coordinatesTextView = findViewById(R.id.coordinatesTextView);
+                coordinatesTextView.setText(decodeCurrentToken());
             }
             lastDeviceRotationFlipFlop = deviceRotationFlipFlop;
         // Calculator is active and device has not been rotated - user wants to enter '0' bit
         } else if (currentTime - zeroBitTimeInterval > lastRotationTime && isCalculatorActive) {
-            currentlyCodedTokenValue *= 2;
-            codingBitCounter += 1;
-            lastRotationTime = currentTime;
-            vibrate(100);
-        }
-
-        // 4 bits for current token have been entered - decode the token
-        if (codingBitCounter == 4) {
             expression += decodeCurrentToken();
             System.out.println(expression);
             currentlyCodedTokenValue = 0;
-            codingBitCounter = 0;
+            lastRotationTime = currentTime;
+            vibrate(100);
+            if(expression.length() == 2){
+                currentlyCodedTokenValue = 10;
+            }
 
             // 3 tokens have been entered - solve the expression
             if (expression.length() == 3) {
@@ -201,11 +196,11 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             return String.valueOf(currentlyCodedTokenValue);
         } else if (currentlyCodedTokenValue < 13) {
             switch(currentlyCodedTokenValue) {
-                case 10:
-                    return "+";
                 case 11:
-                    return "-";
+                    return "+";
                 case 12:
+                    return "-";
+                case 13:
                     return "*";
             }
         }
